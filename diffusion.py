@@ -19,7 +19,7 @@ def make_dataset():
 # ---------------------------
 # 2) Time embedding (sin/cos)
 # This is basically the same as positional embedding in transformers
-# It lets the network know the timestep - eg. earlier timesteps mean more noise
+# It lets the network know the timestep - eg. higher timesteps mean more noise
 # ---------------------------
 def t_embed(t, dim=32):
     half = dim // 2
@@ -85,13 +85,14 @@ class EpsMLP(nn.Module):
 
 # ---------------------------
 # 4) Beta schedule + ᾱ precompute
+# - defaults from original DDPM paper
 # ---------------------------
 def make_alpha_bar(T=1000, beta_start=1e-4, beta_end=2e-2, device="cpu"):
-    betas = torch.linspace(beta_start, beta_end, T, device=device)
-    alphas = 1.0 - betas
-    abar = torch.cumprod(alphas, dim=0)           # [T]
-    abar = torch.cat([torch.tensor([1.0], device=device), abar])  # 0..T
-    return betas, alphas, abar
+    betas = torch.linspace(beta_start, beta_end, T, device=device) # added noise at each timestep
+    alphas = 1.0 - betas # kept signal at each timestep
+    abar = torch.cumprod(alphas, dim=0)         
+    abar = torch.cat([torch.tensor([1.0], device=device), abar]) 
+    return abar # cumulative product of signal at each timestep, how much signal is left at each timestep
 
 # ---------------------------
 # 5) Training step (one formula, one loss)
@@ -100,18 +101,28 @@ def make_alpha_bar(T=1000, beta_start=1e-4, beta_end=2e-2, device="cpu"):
 # ---------------------------
 def train_step(model, txtenc, optim, batch, abar, device="cpu"):
     names, x0 = zip(*batch)
-    x0 = torch.stack(x0).to(device)                   # [B,3] in [-1,1]
+    # targets - 3D tensor of shape (batch size, 3) in [-1,1]
+    x0 = torch.stack(x0).to(device)  
+    # get the label text embedding for the prompt - 384 dimensions, normalized to 1, detached to avoid training the library
     y  = txtenc.encode(list(names), convert_to_tensor=True, device=device, normalize_embeddings=True).clone().detach()
-    B, T = x0.size(0), len(abar)-1
+    B, T = x0.size(0), len(abar)-1 # batch size, number of timesteps
+
+     # important: we take a random timestep and train each sample on one timestep
     t_idx = torch.randint(1, T+1, (B,), device=device)
-    abar_t = abar[t_idx].view(B,1); one_minus = (1-abar_t).clamp_min(1e-6)
-    eps = torch.randn(B,3, device=device)
-    x_t = abar_t.sqrt()*x0 + one_minus.sqrt()*eps
-    t_cont = t_idx.float() / T
-    eps_hat = model(x_t, t_cont, y)
-    loss = F.mse_loss(eps_hat, eps)
-    optim.zero_grad(); loss.backward(); optim.step()
-    return loss.item()
+
+    abar_t = abar[t_idx].view(B,1) # fancy indexing to get the alpha (eg. signal-retention factor) at timestep t for each sample
+    one_minus = (1-abar_t).clamp_min(1e-6) # avoid numerical issues in sqrt by clamping to 1e-6
+    eps = torch.randn(B,3, device=device) # get a random noise tensor for each sample
+
+    x_t = abar_t.sqrt()*x0 + one_minus.sqrt()*eps # keep some signal and add noise
+    t_cont = t_idx.float() / T # normalized timestep (position) for each timestep - will be turned into a time embedding inside the model
+    eps_hat = model(x_t, t_cont, y) # predict the noise
+    loss = F.mse_loss(eps_hat, eps) # compute the loss - MSE
+    # backpropagate the loss and update the AdamW parameters 
+    optim.zero_grad()
+    loss.backward()
+    optim.step()
+    return loss.item() # return the loss as a scalar
 
 # ---------------------------
 # 6) Deterministic DDIM (η=0) sampling
@@ -144,7 +155,7 @@ if __name__ == "__main__":
     txtenc = SentenceTransformer("all-MiniLM-L6-v2").to(device)
     model  = EpsMLP().to(device)
     opt    = torch.optim.AdamW(list(model.parameters()), lr=5e-4)
-    _,_,abar = make_alpha_bar(T=1000, device=device)
+    abar = make_alpha_bar(T=1000, device=device)
 
     # quick-n-dirty training
     for step in range(6000):  # ~ a few seconds on GPU / ~tens on CPU
