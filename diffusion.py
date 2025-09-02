@@ -1,6 +1,7 @@
 import math, random, torch, torch.nn as nn, torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
-
+from skimage import color
+import numpy as np
 from dataset import get_css_colors, get_xkcd_colors
 
 
@@ -8,9 +9,11 @@ def make_dataset():
     items = []
     all_colors = get_css_colors() | get_xkcd_colors()
     for name, rgb in all_colors.items():
-        x = torch.tensor(rgb, dtype=torch.float32)
-        x = x * 2 - 1  # -> [-1,1]
-        items.append((name, x))
+        x = np.asarray(rgb, dtype=np.float32)
+        # scikit-image expects a 3D array
+        L, a, b = color.rgb2lab(x[None, None, :])[0, 0]
+        t = torch.tensor([L / 50.0 - 1, a / 128.0, b / 128.0])
+        items.append((name, t))
     return items
 
 # ---------------------------
@@ -140,7 +143,7 @@ if __name__ == "__main__":
     data = make_dataset()
     txtenc = SentenceTransformer("all-MiniLM-L6-v2").to(device)
     model  = EpsMLP().to(device)
-    opt    = torch.optim.AdamW(list(model.parameters()), lr=2e-3)
+    opt    = torch.optim.AdamW(list(model.parameters()), lr=5e-4)
     _,_,abar = make_alpha_bar(T=1000, device=device)
 
     # quick-n-dirty training
@@ -153,6 +156,10 @@ if __name__ == "__main__":
     # sample some prompts
     for prompt in ["red", "blue", "beige", "purple", "cream", "warm gray"]:
         x = sample(model, txtenc, prompt, abar, steps=500, device=device)[0]
-        rgb_norm = ((x.cpu().numpy()+1)/2).tolist()
-        rgb_rgb = tuple(round(v * 255) for v in rgb_norm)
+        uL, ua, ub = x
+        L = (uL + 1.0) * 50.0
+        a = ua * 128.0
+        b = ub * 128.0
+        x_rgb = color.lab2rgb(np.array([[[L, a, b]]]))[0, 0]
+        rgb_rgb = tuple(round(v * 255) for v in np.clip(x_rgb, 0, 1))
         print(f"{prompt:>10s} -> RGB \033[38;2;{rgb_rgb[0]};{rgb_rgb[1]};{rgb_rgb[2]}m█\033[0m {rgb_rgb}")
