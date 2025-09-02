@@ -3,9 +3,7 @@ from sentence_transformers import SentenceTransformer
 
 from dataset import get_css_colors, get_xkcd_colors
 
-# ---------------------------
-# 0) Toy data (name, RGB in [0,1])
-# ---------------------------
+
 def make_dataset():
     items = []
     all_colors = get_css_colors() | get_xkcd_colors()
@@ -17,6 +15,8 @@ def make_dataset():
 
 # ---------------------------
 # 2) Time embedding (sin/cos)
+# This is basically the same as positional embedding in transformers
+# It lets the network know the timestep - eg. earlier timesteps mean more noise
 # ---------------------------
 def t_embed(t, dim=32):
     half = dim // 2
@@ -27,6 +27,13 @@ def t_embed(t, dim=32):
 # ---------------------------
 # 3) ε-prediction MLP
 #    Input: concat(x_t, t_emb, y_emb) -> ε_hat (3D)
+#    The y_emb is the embedding of the color name eg. label
+#    x_t is the RGB of the color at the current timestep
+#    t_cont is the timestep as a continuous value between 0 and 1
+#    The output is the predicted noise ε_hat
+#  Architecture:
+#    - yproj: Project the label embedding to 64 dimensions
+#    - fc: 3-layer MLP to predict the noise with SiLU activation
 # ---------------------------
 class EpsMLP(nn.Module):
     def __init__(self, ydim, h):
@@ -38,9 +45,9 @@ class EpsMLP(nn.Module):
             nn.Linear(h, 3)
         )
     def forward(self, x_t, t_cont, y):
-        te = t_embed(t_cont)              # [B,32]
+        te = t_embed(t_cont)
         h = torch.cat([x_t, te, self.yproj(y)], dim=1)
-        return self.fc(h)                 # ε_hat
+        return self.fc(h) # ε_hat
 
 # ---------------------------
 # 4) Beta schedule + ᾱ precompute
@@ -79,6 +86,8 @@ def train_step(model, txtenc, optim, batch, abar, device="cpu"):
 # ---------------------------
 @torch.no_grad()
 def sample(model, txtenc, prompt, abar, steps=100, device="cpu"):
+    model.eval()
+    txtenc.eval()
     T = len(abar)-1
     idxs = torch.linspace(T, 1, steps, device=device).long()
     x = torch.randn(1,3, device=device) 
@@ -112,7 +121,7 @@ if __name__ == "__main__":
 
     # sample some prompts
     for prompt in ["red", "blue", "beige", "purple", "cream", "warm gray"]:
-        x = sample(model, txtenc, prompt, abar, steps=200, device=device)[0]
+        x = sample(model, txtenc, prompt, abar, steps=500, device=device)[0]
         rgb_norm = ((x.cpu().numpy()+1)/2).tolist()
         rgb_rgb = tuple(round(v * 255) for v in rgb_norm)
         print(f"{prompt:>10s} -> RGB \033[38;2;{rgb_rgb[0]};{rgb_rgb[1]};{rgb_rgb[2]}m█\033[0m {rgb_rgb}")
