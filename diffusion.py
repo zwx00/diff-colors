@@ -144,9 +144,9 @@ def sample(model, txtenc, prompt, abar, steps=100, device="cpu"):
         a_t  = abar[ti]; a_prev = abar[max(ti-1,0)] # get signal strenght at this and previous step
         t_cont = torch.full((1,), ti/float(T), device=device) # time signal between 0-1 (to be turned into positional embedding later)
         eps_hat = model(x, t_cont, y) # predict the noise for given step
-        x0_hat = (x - torch.sqrt(1-a_t)*eps_hat) / torch.sqrt(a_t) # given a_t (noise level at step) and models noise prediction, calculate x0 (eg. target) 
+        x0_hat = (x - torch.sqrt(1-a_t)*eps_hat) / torch.sqrt(a_t) # given a_t (noise level at step) and models noise prediction, calculate x0 (eg. model's target estimate) 
         x = torch.sqrt(a_prev)*x0_hat + torch.sqrt(1-a_prev)*eps_hat # DDIM (deterministic) -> use the x0 calculated previously to get the correct combination of (less) noise and (more) signal to be used for the next iteration (eg. timestep - 1)
-    return x.clamp(-1,1)     # Lab in [1,1]
+    return x.clamp(-1,1)     # Lab in [-1,1]
 
 # ---------------------------
 # 7) Tiny demo
