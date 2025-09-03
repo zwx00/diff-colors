@@ -98,6 +98,7 @@ def make_alpha_bar(T=1000, beta_start=1e-4, beta_end=2e-2, device="cpu"):
 # 5) Training step (one formula, one loss)
 #     x_t = sqrt(abar_t) * x0 + sqrt(1-abar_t) * ε
 #     L = || ε - ε_hat(x_t, t, y) ||^2
+# Note: sqrt is related to the fact that in gaussian distribution, we multiply by standard deviation to get the given variance (spread) of a sample
 # ---------------------------
 def train_step(model, txtenc, optim, batch, abar, device="cpu"):
     names, x0 = zip(*batch)
@@ -131,20 +132,21 @@ def train_step(model, txtenc, optim, batch, abar, device="cpu"):
 # ---------------------------
 @torch.no_grad()
 def sample(model, txtenc, prompt, abar, steps=100, device="cpu"):
+    # inference mode
     model.eval()
     txtenc.eval()
-    T = len(abar)-1
-    idxs = torch.linspace(T, 1, steps, device=device).long()
-    x = torch.randn(1,3, device=device) 
-    y = txtenc.encode([prompt], convert_to_tensor=True, device=device, normalize_embeddings=True).clone().detach()
-    for i in range(len(idxs)):
-        ti = idxs[i].item()
-        a_t  = abar[ti]; a_prev = abar[max(ti-1,0)]
-        t_cont = torch.full((1,), ti/float(T), device=device)
-        eps_hat = model(x, t_cont, y)
-        x0_hat = (x - torch.sqrt(1-a_t)*eps_hat) / torch.sqrt(a_t)
-        x = torch.sqrt(a_prev)*x0_hat + torch.sqrt(1-a_prev)*eps_hat
-    return x.clamp(-1,1)     # RGB in [-1,1]
+    T = len(abar)-1 # total number of diffusion steps the model was trained with
+    idxs = torch.linspace(T, 1, steps, device=device).long() # get subset of steps eg. 1000, 990 ... 10 if T = 1000 and sampling steps = 100 -> we don't need torun every step
+    x = torch.randn(1,3, device=device)  # starting point is pure noise
+    y = txtenc.encode([prompt], convert_to_tensor=True, device=device, normalize_embeddings=True).clone().detach() # prompt to text embedding, no gradients needed for sampling
+    for i in range(len(idxs)): # start from total timestep T (eg. 1000) and iterate down
+        ti = idxs[i].item() #
+        a_t  = abar[ti]; a_prev = abar[max(ti-1,0)] # get signal strenght at this and previous step
+        t_cont = torch.full((1,), ti/float(T), device=device) # time signal between 0-1 (to be turned into positional embedding later)
+        eps_hat = model(x, t_cont, y) # predict the noise for given step
+        x0_hat = (x - torch.sqrt(1-a_t)*eps_hat) / torch.sqrt(a_t) # given a_t (noise level at step) and models noise prediction, calculate x0 (eg. target) 
+        x = torch.sqrt(a_prev)*x0_hat + torch.sqrt(1-a_prev)*eps_hat # DDIM (deterministic) -> use the x0 calculated previously to get the correct combination of (less) noise and (more) signal to be used for the next iteration (eg. timestep - 1)
+    return x.clamp(-1,1)     # Lab in [1,1]
 
 # ---------------------------
 # 7) Tiny demo
