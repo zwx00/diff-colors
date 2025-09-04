@@ -163,6 +163,16 @@ def sample(model, txtenc, prompt, abar, steps=100, cfg=3.5, device="cpu"):
 # ---------------------------
 # 7) Tiny demo
 # ---------------------------
+
+def x_to_rgb(x):
+    uL, ua, ub = x
+    L = (uL + 1.0) * 50.0
+    a = ua * 128.0
+    b = ub * 128.0
+    x_rgb = color.lab2rgb(np.array([[[L, a, b]]]))[0, 0]
+    rgb_rgb = tuple(round(v * 255) for v in np.clip(x_rgb, 0, 1))
+    return rgb_rgb
+
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data = make_dataset()
@@ -181,10 +191,13 @@ if __name__ == "__main__":
     # sample some prompts
     for prompt in ["red", "blue", "beige", "purple", "cream", "warm gray"]:
         x = sample(model, txtenc, prompt, abar, steps=500, device=device)[0]
-        uL, ua, ub = x
-        L = (uL + 1.0) * 50.0
-        a = ua * 128.0
-        b = ub * 128.0
-        x_rgb = color.lab2rgb(np.array([[[L, a, b]]]))[0, 0]
-        rgb_rgb = tuple(round(v * 255) for v in np.clip(x_rgb, 0, 1))
+        rgb_rgb = x_to_rgb(x)
         print(f"{prompt:>10s} -> RGB \033[38;2;{rgb_rgb[0]};{rgb_rgb[1]};{rgb_rgb[2]}m█\033[0m {rgb_rgb}")
+
+    while True:
+        user_input = input("Enter a color description or 'q' to quit: ")
+        if user_input == "q":
+            break
+        x = sample(model, txtenc, user_input, abar, steps=500, device=device)[0]
+        rgb_rgb = x_to_rgb(x)
+        print(f"{user_input:>10s} -> RGB \033[38;2;{rgb_rgb[0]};{rgb_rgb[1]};{rgb_rgb[2]}m█\033[0m {rgb_rgb}")
