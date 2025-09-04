@@ -106,6 +106,12 @@ def train_step(model, txtenc, optim, batch, abar, device="cpu"):
     x0 = torch.stack(x0).to(device)  
     # get the label text embedding for the prompt - 384 dimensions, normalized to 1, detached to avoid training the library
     y  = txtenc.encode(list(names), convert_to_tensor=True, device=device, normalize_embeddings=True).clone().detach()
+
+    # Classifier-free guidance - include some unconditional training
+    # generate a tensor of shape (batch size, 1) with each row having 0.1 probability of being 1 ( bool -> float )
+    mask = (torch.rand(y.size(0), 1, device=device) < 0.1).float()
+    y = y * (1 - mask) # multiplication via broadcast rule (expanding the tensor to the same shape as y), the whole embedding row is multiplied by 0 or 1
+
     B, T = x0.size(0), len(abar)-1 # batch size, number of timesteps
 
      # important: we take a random timestep and train each sample on one timestep
@@ -131,7 +137,7 @@ def train_step(model, txtenc, optim, batch, abar, device="cpu"):
 #     with x0_hat = (x_t - sqrt(1-abar_t)*ε_hat) / sqrt(abar_t)
 # ---------------------------
 @torch.no_grad()
-def sample(model, txtenc, prompt, abar, steps=100, device="cpu"):
+def sample(model, txtenc, prompt, abar, steps=100, cfg=3.5, device="cpu"):
     # inference mode
     model.eval()
     txtenc.eval()
@@ -139,11 +145,17 @@ def sample(model, txtenc, prompt, abar, steps=100, device="cpu"):
     idxs = torch.linspace(T, 1, steps, device=device).long() # get subset of steps eg. 1000, 990 ... 10 if T = 1000 and sampling steps = 100 -> we don't need torun every step
     x = torch.randn(1,3, device=device)  # starting point is pure noise
     y = txtenc.encode([prompt], convert_to_tensor=True, device=device, normalize_embeddings=True).clone().detach() # prompt to text embedding, no gradients needed for sampling
+    y_uncond = torch.zeros_like(y) # unconditional embedding
+
     for i in range(len(idxs)): # start from total timestep T (eg. 1000) and iterate down
         ti = idxs[i].item() #
         a_t  = abar[ti]; a_prev = abar[max(ti-1,0)] # get signal strenght at this and previous step
         t_cont = torch.full((1,), ti/float(T), device=device) # time signal between 0-1 (to be turned into positional embedding later)
-        eps_hat = model(x, t_cont, y) # predict the noise for given step
+        eps_hat_cond = model(x, t_cont, y) # predict the noise for given step, conditional on embedding
+        eps_hat_uncond = model(x, t_cont, y_uncond) # predict the noise for given step, unconditional
+        
+        # update eps with classifier-free guidance - add some multiple of the conditional difference to the unconditional prediction
+        eps_hat = eps_hat_uncond + cfg * (eps_hat_cond - eps_hat_uncond)
         x0_hat = (x - torch.sqrt(1-a_t)*eps_hat) / torch.sqrt(a_t) # given a_t (noise level at step) and models noise prediction, calculate x0 (eg. model's target estimate) 
         x = torch.sqrt(a_prev)*x0_hat + torch.sqrt(1-a_prev)*eps_hat # DDIM (deterministic) -> use the x0 calculated previously to get the correct combination of (less) noise and (more) signal to be used for the next iteration (eg. timestep - 1)
     return x.clamp(-1,1)     # Lab in [-1,1]
